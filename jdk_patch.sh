@@ -7,6 +7,8 @@
 
 SCRIPT_DIR="$(dirname "$([[ -L "${BASH_SOURCE[0]}" ]] && readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")"
 
+dryrun=0;
+
 #######################################
 # Print usage information.
 #
@@ -21,6 +23,7 @@ column -t -s $'\t' <<EOF
 -d <java_dir>   JAVA_HOME, the JDK to patch the jsse.jar of
 -b <backup_dir> Directory to save the backed up class files in.  You'll want these to revert the change.
 -c <class_name> Class name as in the jdk, example:  sun/security/ssl/SupportedEllipticCurvesExtension.class
+-n dry run, don't update the jdk, just extract classes.
 -s <source dir> Source dir containing the classes to replace.  should have the class in the correct path src/sun/security/ssl/SupportedEllipticCurvesExtension.class
 EOF
 }
@@ -30,13 +33,17 @@ EOF
 # Parse args into global values.
 #
 # Globals:
+#   BACKUP_DIR: where to store the extracted class files.
+#   replaced_classes: array of class paths that will be replaced.
+#   JAVA_DIR equivalent to JAVA_HOME, the path to the jdk we're patching.
+#   SOURCE_DIR: dir containing the replacement classes
 # Arguments:
 #   Flags...
 # Returns:
 #   None
 #######################################
 function parse_args {
-  optspec=":b:c:d:hs:"
+  optspec=":b:c:d:hns:"
   while getopts "$optspec" optchar; do
     case ${optchar} in
     b)
@@ -52,6 +59,9 @@ function parse_args {
       usage
       exit 2
       ;;
+    n)
+      dryrun=1
+      ;;
     s)
       SOURCE_DIR=$OPTARG
       ;;
@@ -64,7 +74,7 @@ function parse_args {
   done
 }
 
-function backup_classes {
+function backup_jdk_classes {
   echo Classes: ${replaced_classes[@]}
 
   # replaced_classes is a list of class paths in jsse.jar we're going to extract and replace.
@@ -74,8 +84,21 @@ function backup_classes {
   # enter the backup directory
   pushd ${BACKUP_DIR}
   for class_name in ${replaced_classes[@]}; do
-    echo "Extracting ${class_name} into ${PWD}"
+    echo Extracting ${class_name} into ${PWD}
     $JAVA_DIR/bin/jar xvf "$JSSE_JAR" "$class_name"
+  done
+  popd
+}
+
+function replace_jdk_classes {
+  echo Classes: ${replaced_classes[@]}
+
+  # replaced_classes is a list of class paths in jsse.jar we're going to extract and replace.
+  # enter the backup directory
+  pushd ${SOURCE_DIR}
+  for class_name in ${replaced_classes[@]}; do
+    echo Replacing ${class_name} from ${PWD}
+    $JAVA_DIR/bin/jar uvf "$JSSE_JAR" "$class_name"
   done
   popd
 }
@@ -95,10 +118,17 @@ function main() {
   echo JSSE_JAR: ${JSSE_JAR}
   echo BACKUP_DIR: ${BACKUP_DIR}
 
+  echo JSSE_JAR sha1sum before: $(sha1sum $JSSE_JAR) 
+
   # First we want to save all of the classes, so they can be reversed later.
-  backup_classes
+  backup_jdk_classes
 
   # then we replace the existing classes with the new classes.
+  if [[ 1 != $dryrun ]]; then
+    replace_jdk_classes
+  fi
+
+  echo JSSE_JAR sha1sum after: $(sha1sum $JSSE_JAR) 
 }
 
 declare -a replaced_classes
